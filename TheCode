@@ -1,0 +1,195 @@
+"""
+Ref: hatem.yazidi@gazeol.com
+"""
+import PySimpleGUI as sg
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from scipy.stats import norm
+from scipy.signal import find_peaks
+
+# Set seaborn style
+sns.set(style="whitegrid")
+
+# Default parameters
+default_params = {
+    "k_nl": 2.0,
+    "n": 1.5,
+    "rain_peak": 15.0,    # Peak rainfall intensity (mm/h)
+    "rain_center": 5.0,   # Center time of rainfall (hours)
+    "rain_width": 2.0,    # Width of rainfall distribution (hours)
+    "duration": 10.0      # Total simulation duration (hours)
+}
+
+def generate_rainfall(peak, center, width, duration):
+    time = np.linspace(0, duration, 100)
+    rainfall = peak * norm.pdf(time, center, width)
+    rainfall = rainfall / np.max(rainfall) * peak  # Ensure peak is correct
+    return time, rainfall
+
+def compute_nonlinear_runoff(time, rainfall, k_nl, n):
+    Q_nl = np.zeros_like(rainfall)
+    dt = time[1] - time[0]  # time step
+    for t in range(1, len(rainfall)):
+        term = max(rainfall[t - 1] - Q_nl[t - 1], 0)
+        Q_nl[t] = Q_nl[t - 1] + (dt / k_nl) * term
+        if Q_nl[t] > 0:
+            Q_nl[t] = Q_nl[t - 1] + (dt / k_nl) * (rainfall[t - 1] - Q_nl[t - 1] ** n)
+        else:
+            Q_nl[t] = 0
+    return np.maximum(Q_nl, 0)
+
+def find_peak_properties(time, data):
+    peaks, _ = find_peaks(data)
+    if len(peaks) > 0:
+        max_idx = peaks[np.argmax(data[peaks])]
+        return time[max_idx], data[max_idx]
+    return None, None
+
+def draw_figure(canvas, figure):
+    figure_canvas_agg = FigureCanvasTkAgg(figure, canvas)
+    figure_canvas_agg.draw()
+    figure_canvas_agg.get_tk_widget().pack(side="top", fill="both", expand=1)
+    return figure_canvas_agg
+
+def create_plot(params):
+    time, rainfall = generate_rainfall(params["rain_peak"], params["rain_center"], 
+                                     params["rain_width"], params["duration"])
+    Q_nl = compute_nonlinear_runoff(time, rainfall, params["k_nl"], params["n"])
+    
+    # Find peak properties
+    rain_peak_time, rain_peak_val = find_peak_properties(time, rainfall)
+    runoff_peak_time, runoff_peak_val = find_peak_properties(time, Q_nl)
+    
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
+    ax.plot(time, rainfall, label=f"Rainfall (peak: {rain_peak_val:.1f} mm/h)", color='#1f77b4', linewidth=2)
+    ax.plot(time, Q_nl, label=f"Runoff (peak: {runoff_peak_val:.1f} mm/h)", color='#ff7f0e', linewidth=2)
+    
+    # Annotate peaks
+    if rain_peak_time is not None:
+        ax.axvline(x=rain_peak_time, color='#1f77b4', linestyle='--', alpha=0.5)
+        ax.annotate(f'{rain_peak_val:.1f} mm/h', 
+                    xy=(rain_peak_time, rain_peak_val),
+                    xytext=(5, 10), textcoords='offset points',
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
+    
+    if runoff_peak_time is not None:
+        ax.axvline(x=runoff_peak_time, color='#ff7f0e', linestyle='--', alpha=0.5)
+        ax.annotate(f'{runoff_peak_val:.1f} mm/h', 
+                    xy=(runoff_peak_time, runoff_peak_val),
+                    xytext=(5, -20), textcoords='offset points',
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
+    
+    # Calculate and display time difference
+    if rain_peak_time is not None and runoff_peak_time is not None:
+        time_diff = runoff_peak_time - rain_peak_time
+        ax.annotate(f'Time lag: {time_diff:.2f} hours', 
+                    xy=((rain_peak_time + runoff_peak_time)/2, max(rain_peak_val, runoff_peak_val)/2),
+                    xytext=(0, 30), textcoords='offset points',
+                    arrowprops=dict(arrowstyle='->'),
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
+        
+        # Calculate peak difference
+        peak_diff = rain_peak_val - runoff_peak_val
+        ax.annotate(f'Peak diff: {peak_diff:.1f} mm/h', 
+                    xy=(runoff_peak_time, runoff_peak_val),
+                    xytext=(20, 20), textcoords='offset points',
+                    bbox=dict(boxstyle='round,pad=0.5', fc='white', alpha=0.8))
+    
+    ax.set_title("Storm Runoff Analysis", fontsize=14)
+    ax.set_xlabel("Time (hours)", fontsize=12)
+    ax.set_ylabel("Intensity (mm/h)", fontsize=12)
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.set_xlim(0, params["duration"])
+    fig.tight_layout()
+    return fig
+
+# GUI layout
+sg.theme("LightBlue3")
+
+layout = [
+    [sg.Text("Storm Runoff Simulator", font=("Helvetica", 20, 'bold'), 
+             justification='center', expand_x=True, pad=((0,0),(10,10)))],
+    
+    [sg.Frame('Reservoir Parameters', 
+              layout=[
+                  [sg.Text("k (response time)", size=20),
+                   sg.Slider(range=(0.1, 10), default_value=default_params["k_nl"], resolution=0.1, 
+                            orientation='h', size=(30, 20), key="-K-", 
+                            tooltip="Range: 0.1 to 10")],
+                  [sg.Text("n (nonlinearity exponent)", size=20),
+                   sg.Slider(range=(0.1, 10), default_value=default_params["n"], resolution=0.1, 
+                            orientation='h', size=(30, 20), key="-N-",
+                            tooltip="Range: 0.1 to 10")]
+              ], font=("Helvetica", 12, 'bold'))],
+    
+    [sg.Frame('Rainfall Parameters',
+              layout=[
+                  [sg.Text("Peak intensity (mm/h)", size=20),
+                   sg.Slider(range=(0, 50), default_value=default_params["rain_peak"], resolution=1,
+                            orientation='h', size=(30, 20), key="-PEAK-")],
+                  [sg.Text("Center time (hours)", size=20),
+                   sg.Slider(range=(0, 10), default_value=default_params["rain_center"], resolution=0.5,
+                            orientation='h', size=(30, 20), key="-CENTER-")],
+                  [sg.Text("Duration (hours)", size=20),
+                   sg.Slider(range=(1, 24), default_value=default_params["duration"], resolution=1,
+                            orientation='h', size=(30, 20), key="-DURATION-")],
+                  [sg.Text("Width (hours)", size=20),
+                   sg.Slider(range=(0.5, 5), default_value=default_params["rain_width"], resolution=0.1,
+                            orientation='h', size=(30, 20), key="-WIDTH-")]
+              ], font=("Helvetica", 12, 'bold'))],
+    
+    [sg.Column([
+        [sg.Button("Update Plot", size=(12, 1), font=('Helvetica', 12, 'bold'), button_color=('white', '#4B8BBE')),
+         sg.Button("Reset to Default", size=(12, 1), font=('Helvetica', 12, 'bold'), button_color=('white', '#4B8BBE')),
+         sg.Button("Exit", size=(12, 1), font=('Helvetica', 12, 'bold'), button_color=('white', '#d62728'))]
+    ], justification='center', pad=((0,0),(15,10)))],
+    
+    [sg.Canvas(key="-CANVAS-", size=(800, 500), pad=(0, 10))]
+]
+
+window = sg.Window("Storm Runoff Simulator", layout, finalize=True, 
+                  element_justification="center", resizable=True)
+
+# Initial plot
+fig = create_plot(default_params)
+fig_canvas_agg = draw_figure(window["-CANVAS-"].TKCanvas, fig)
+
+# Event loop
+while True:
+    event, values = window.read()
+    if event in (sg.WIN_CLOSED, "Exit"):
+        break
+    elif event == "Update Plot":
+        try:
+            params = {
+                "k_nl": float(values["-K-"]),
+                "n": float(values["-N-"]),
+                "rain_peak": float(values["-PEAK-"]),
+                "rain_center": float(values["-CENTER-"]),
+                "rain_width": float(values["-WIDTH-"]),
+                "duration": float(values["-DURATION-"])
+            }
+            # Clear old plot
+            for widget in window["-CANVAS-"].TKCanvas.winfo_children():
+                widget.destroy()
+            # Draw updated plot
+            fig = create_plot(params)
+            fig_canvas_agg = draw_figure(window["-CANVAS-"].TKCanvas, fig)
+        except ValueError:
+            sg.popup_error("Please enter valid numeric values for parameters.")
+    elif event == "Reset to Default":
+        window["-K-"].update(default_params["k_nl"])
+        window["-N-"].update(default_params["n"])
+        window["-PEAK-"].update(default_params["rain_peak"])
+        window["-CENTER-"].update(default_params["rain_center"])
+        window["-WIDTH-"].update(default_params["rain_width"])
+        window["-DURATION-"].update(default_params["duration"])
+        for widget in window["-CANVAS-"].TKCanvas.winfo_children():
+            widget.destroy()
+        fig = create_plot(default_params)
+        fig_canvas_agg = draw_figure(window["-CANVAS-"].TKCanvas, fig)
+
+window.close()
